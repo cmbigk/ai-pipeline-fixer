@@ -1,0 +1,3 @@
+MVP GOAL MANIFESTO
+
+Build a tool that detects a failed GitLab pipeline, fetches the failed job log through the GitLab Jobs API, extracts the important error lines, classifies the likely issue, asks a local AI to explain the root cause and suggest a fix, shows that suggestion to the engineer, and then creates a branch plus merge request after approval instead of silently changing the main branch. GitLab exposes job traces through the Jobs API and GitLab also supports merge-request creation through its API, so this flow is technically realistic for an MVP.
