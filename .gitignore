@@ -1,6 +1,7 @@
 .env
 .env* 
 
-
-
+proposals/
+Documentations/
+__pycache__/*
 logs/
