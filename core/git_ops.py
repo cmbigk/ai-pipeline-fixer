@@ -85,17 +85,17 @@ def commit_and_push(
     for file_path in files_to_stage:
         result = _run_git(repo_path, ["add", file_path])
         if result.returncode != 0:
-            return False, f"Failed to stage '{file_path}': {result.stderr}"
+            return False, f"Failed to stage '{file_path}': {result.stderr} {result.stdout}"
 
     # Commit
     result = _run_git(repo_path, ["commit", "-m", commit_message])
     if result.returncode != 0:
-        return False, f"Failed to commit: {result.stderr}"
+        return False, f"Failed to commit: {result.stderr} {result.stdout}"
 
     # Push
     result = _run_git(repo_path, ["push", "-u", "origin", branch_name])
     if result.returncode != 0:
-        return False, f"Failed to push: {result.stderr}"
+        return False, f"Failed to push: {result.stderr} {result.stdout}"
 
     return True, f"Committed and pushed to '{branch_name}'"
 
@@ -104,5 +104,5 @@ def cleanup(repo_path: str) -> Tuple[bool, str]:
     """Return to main branch after the fix is done."""
     result = _run_git(repo_path, ["checkout", "main"])
     if result.returncode != 0:
-        return False, f"Failed to checkout main: {result.stderr}"
+        return False, f"Failed to checkout main: {result.stderr} {result.stdout}"
     return True, "Returned to main branch"

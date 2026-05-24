@@ -7,12 +7,12 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 
-from github_client import GitHubClient
-from log_parser import LogParser
-import ai_agent
-import state
-import validators
-import git_ops
+from core.github_client import GitHubClient
+from core.log_parser import LogParser
+from core import ai_agent
+from core import state
+from core import validators
+from core import git_ops
 
 # Load environment variables
 load_dotenv()
@@ -94,8 +94,19 @@ async def github_webhook(
                 state.create_initial_state(str(job_id), repo_full_name, parser_output)
                 state.update_status(str(job_id), "proposal_ready")
                 
+                # Get repo files
+                repo_files = []
+                if os.path.exists(TARGET_REPO_PATH):
+                    for root, _, filenames in os.walk(TARGET_REPO_PATH):
+                        if ".git" in root or "__pycache__" in root:
+                            continue
+                        for f in filenames:
+                            full_path = os.path.join(root, f)
+                            rel_path = os.path.relpath(full_path, TARGET_REPO_PATH)
+                            repo_files.append(rel_path)
+                
                 # 9. Generate AI proposal
-                ai_res = ai_agent.generate_proposal(parser_output, repo_full_name, GEMINI_API_KEY)
+                ai_res = ai_agent.generate_proposal(parser_output, repo_full_name, GEMINI_API_KEY, repo_files)
                 
                 if ai_res["success"]:
                     proposal = ai_res["proposal"]

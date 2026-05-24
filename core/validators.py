@@ -46,6 +46,8 @@ def validate_execution_schema(data: dict) -> ValidationResult:
         return False, "Missing required field: 'files_changed'"
     if not isinstance(data["files_changed"], list):
         return False, "'files_changed' must be a list"
+    if not data["files_changed"]:
+        return False, "Execution result has no files_changed (list is empty). AI may have failed to generate a fix."
     if "change_summary" not in data:
         return False, "Missing required field: 'change_summary'"
 

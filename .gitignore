@@ -3,5 +3,8 @@
 
 proposals/
 Documentations/
-__pycache__/*
+__pycache__/
 logs/
+venv/
+*.pyc
+.DS_Store

@@ -75,7 +75,7 @@ def _extract_json_from_response(text: str) -> dict:
     return json.loads(cleaned)
 
 
-def generate_proposal(parser_output: dict, repo_full_name: str, api_key: str) -> dict:
+def generate_proposal(parser_output: dict, repo_full_name: str, api_key: str, repo_files: list[str] = None) -> dict:
     """
     Send parsed error context to Gemini and get a structured proposal.
     Returns {"success": True, "proposal": {...}, "raw_response": "..."} or
@@ -83,6 +83,8 @@ def generate_proposal(parser_output: dict, repo_full_name: str, api_key: str) ->
     Retries once if the JSON is malformed.
     """
     client = genai.Client(api_key=api_key)
+
+    repo_files_str = "\n".join(repo_files) if repo_files else "Unknown"
 
     user_prompt = f"""Analyze this GitHub Actions failure from repo '{repo_full_name}':
 
@@ -93,6 +95,9 @@ Confidence: {parser_output.get('confidence', 0)}
 
 Failure snippet:
 {parser_output.get('failure_snippet', 'No snippet available')}
+
+Files in the repository (use these exact paths in your candidate_files):
+{repo_files_str}
 
 Return your analysis as the specified JSON structure."""
 
