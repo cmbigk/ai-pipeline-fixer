@@ -67,7 +67,7 @@ class LogParser:
             
         # Extract surrounding context (e.g., 3 lines before and 5 lines after)
         start_idx = max(0, error_index - 5)
-        end_idx = min(len(lines), error_index + 10)
+        end_idx = min(len(lines), error_index + 20)
         failure_snippet = "\n".join(lines[start_idx:end_idx])
         
         # Determine a basic confidence score
