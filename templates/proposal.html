@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proposal — Job {{ state.job_id }}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 2rem;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        a { color: #58a6ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .back-link { margin-bottom: 1.5rem; display: inline-block; font-size: 0.9rem; }
+
+        h1 {
+            color: #58a6ff;
+            margin-bottom: 0.5rem;
+            font-size: 1.4rem;
+        }
+        .meta {
+            color: #8b949e;
+            font-size: 0.85rem;
+            margin-bottom: 1.5rem;
+        }
+        .badge {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-pending_approval { background: #d29922; color: #0d1117; }
+        .badge-approved { background: #238636; color: #fff; }
+        .badge-rejected { background: #da3633; color: #fff; }
+        .badge-pr_created { background: #a371f7; color: #fff; }
+        .badge-failed { background: #da3633; color: #fff; }
+        .badge-fixed { background: #238636; color: #fff; }
+        .badge-parsed { background: #8b949e; color: #0d1117; }
+        .badge-proposal_ready { background: #388bfd; color: #fff; }
+        .badge-executing_fix { background: #d29922; color: #0d1117; }
+
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 1.25rem;
+            margin-bottom: 1rem;
+        }
+        .card h2 {
+            color: #58a6ff;
+            font-size: 1rem;
+            margin-bottom: 0.75rem;
+        }
+        .card p, .card pre {
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+        .card pre {
+            background: #0d1117;
+            padding: 0.75rem;
+            border-radius: 6px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .file-list {
+            list-style: none;
+            padding: 0;
+        }
+        .file-list li {
+            padding: 0.3rem 0;
+            font-family: monospace;
+            font-size: 0.85rem;
+            color: #e6edf3;
+        }
+        .file-list li::before {
+            content: "📄 ";
+        }
+        .patchable-yes { color: #3fb950; font-weight: 600; }
+        .patchable-no { color: #da3633; font-weight: 600; }
+
+        .risk-low { color: #3fb950; }
+        .risk-medium { color: #d29922; }
+        .risk-high { color: #da3633; }
+
+        .actions {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+        .btn {
+            padding: 0.65rem 1.5rem;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.85; }
+        .btn-approve { background: #238636; color: #fff; }
+        .btn-reject { background: #da3633; color: #fff; }
+
+        .error-box {
+            background: #3d1114;
+            border: 1px solid #da3633;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            color: #f85149;
+        }
+        .success-box {
+            background: #0d2818;
+            border: 1px solid #238636;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            color: #3fb950;
+        }
+    </style>
+</head>
+<body>
+    <a href="/proposals" class="back-link">← Back to Dashboard</a>
+
+    <h1>🔍 Proposal for Job {{ state.job_id }}</h1>
+    <div class="meta">
+        Repository: <strong>{{ state.repo_full_name }}</strong> &nbsp;|&nbsp;
+        Status: <span class="badge badge-{{ state.status }}">{{ state.status }}</span> &nbsp;|&nbsp;
+        Created: {{ state.created_at[:19] if state.created_at else '—' }}
+    </div>
+
+    {% if state.error_message %}
+    <div class="error-box">
+        <strong>Error:</strong> {{ state.error_message }}
+    </div>
+    {% endif %}
+
+    {% if state.pr_url %}
+    <div class="success-box">
+        <strong>✅ PR Created:</strong> <a href="{{ state.pr_url }}" target="_blank">{{ state.pr_url }}</a>
+    </div>
+    {% endif %}
+
+    <!-- Parser Output -->
+    <div class="card">
+        <h2>📋 Parsed Error</h2>
+        <p><strong>Label:</strong> {{ state.parser_output.error_label }}</p>
+        <p><strong>Primary error line:</strong></p>
+        <pre>{{ state.parser_output.primary_error_line }}</pre>
+        <p style="margin-top: 0.5rem;"><strong>Failure snippet:</strong></p>
+        <pre>{{ state.parser_output.failure_snippet }}</pre>
+    </div>
+
+    {% if state.proposal %}
+    <!-- AI Proposal -->
+    <div class="card">
+        <h2>🤖 AI Proposal</h2>
+        <p><strong>Error Explanation:</strong></p>
+        <p>{{ state.proposal.error_explanation }}</p>
+
+        <p style="margin-top: 0.75rem;"><strong>Suggested Fix:</strong></p>
+        <p>{{ state.proposal.suggested_fix }}</p>
+
+        <p style="margin-top: 0.75rem;"><strong>Patchable:</strong>
+            {% if state.proposal.is_patchable %}
+                <span class="patchable-yes">Yes ✓</span>
+            {% else %}
+                <span class="patchable-no">No ✗</span>
+            {% endif %}
+        </p>
+
+        <p style="margin-top: 0.75rem;"><strong>Risk Level:</strong>
+            <span class="risk-{{ state.proposal.risk_level }}">{{ state.proposal.risk_level }}</span>
+        </p>
+
+        <p style="margin-top: 0.75rem;"><strong>Candidate Files:</strong></p>
+        <ul class="file-list">
+            {% for f in state.proposal.candidate_files %}
+            <li>{{ f }}</li>
+            {% endfor %}
+        </ul>
+
+        <p style="margin-top: 0.75rem;"><strong>Suggested Branch:</strong> <code>{{ state.proposal.suggested_branch_name }}</code></p>
+        <p><strong>Suggested PR Title:</strong> {{ state.proposal.suggested_pr_title }}</p>
+    </div>
+    {% endif %}
+
+    {% if state.diff_summary %}
+    <div class="card">
+        <h2>📊 Diff Summary</h2>
+        <pre>{{ state.diff_summary }}</pre>
+    </div>
+    {% endif %}
+
+    <!-- Approve / Reject buttons — only show when pending_approval -->
+    {% if state.status == 'pending_approval' %}
+    <div class="actions">
+        <form method="POST" action="/proposals/{{ state.job_id }}/approve">
+            <button type="submit" class="btn btn-approve">✅ Approve & Execute Fix</button>
+        </form>
+        <form method="POST" action="/proposals/{{ state.job_id }}/reject">
+            <button type="submit" class="btn btn-reject">❌ Reject</button>
+        </form>
+    </div>
+    {% endif %}
+</body>
+</html>

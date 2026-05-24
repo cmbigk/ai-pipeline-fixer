@@ -2,23 +2,34 @@ import os
 import hmac
 import hashlib
 import json
-from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi import FastAPI, Request, HTTPException, Header, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 
 from github_client import GitHubClient
+from log_parser import LogParser
+import ai_agent
+import state
+import validators
+import git_ops
 
 # Load environment variables
 load_dotenv()
 
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+TARGET_REPO_PATH = os.getenv("TARGET_REPO_PATH", "")
 
 app = FastAPI(title="AI Pipeline Fixer Webhook")
+templates = Jinja2Templates(directory="templates")
 
 # Ensure logs directory exists
 os.makedirs("logs", exist_ok=True)
 
 github_client = GitHubClient(token=GITHUB_TOKEN)
+log_parser = LogParser()
 
 def verify_signature(payload_body: bytes, secret_token: str, signature_header: str) -> bool:
     """Verify that the payload was sent from GitHub by validating SHA256 signature."""
@@ -75,7 +86,47 @@ async def github_webhook(
                 with open(log_file_path, "w", encoding="utf-8") as f:
                     f.write(log_content)
                 print(f"Successfully saved log to {log_file_path}")
-                return {"status": "success", "message": f"Log saved to {log_file_path}"}
+
+                # 8. Parse the log
+                parser_output = log_parser.parse(log_content)
+                
+                # Create initial state
+                state.create_initial_state(str(job_id), repo_full_name, parser_output)
+                state.update_status(str(job_id), "proposal_ready")
+                
+                # 9. Generate AI proposal
+                ai_res = ai_agent.generate_proposal(parser_output, repo_full_name, GEMINI_API_KEY)
+                
+                if ai_res["success"]:
+                    proposal = ai_res["proposal"]
+                    # 10. Validate proposal schema
+                    is_valid, err_msg = validators.validate_proposal_schema(proposal)
+                    if is_valid:
+                        state.update_status(
+                            str(job_id), 
+                            "pending_approval", 
+                            proposal=proposal,
+                            raw_proposal_response=ai_res["raw_response"]
+                        )
+                        print(f"Proposal generated and pending approval for job {job_id}")
+                    else:
+                        state.update_status(
+                            str(job_id), 
+                            "failed", 
+                            error_message=f"Proposal validation failed: {err_msg}",
+                            raw_proposal_response=ai_res["raw_response"]
+                        )
+                        print(f"Proposal validation failed: {err_msg}")
+                else:
+                    state.update_status(
+                        str(job_id), 
+                        "failed", 
+                        error_message=f"AI proposal failed: {ai_res['error']}",
+                        raw_proposal_response=ai_res["raw_response"]
+                    )
+                    print(f"AI proposal failed: {ai_res['error']}")
+
+                return {"status": "success", "message": f"Log processed and proposal generated."}
             else:
                 print("Failed to download log content.")
                 return {"status": "error", "message": "Could not download log"}
@@ -84,3 +135,159 @@ async def github_webhook(
             return {"status": "error", "message": "Failed job not found"}
 
     return {"status": "ignored", "reason": "Workflow did not fail or is not completed"}
+
+
+# --- UI and Workflow Routes ---
+
+@app.get("/proposals", response_class=HTMLResponse)
+async def list_proposals(request: Request):
+    """Dashboard showing all proposals."""
+    proposals = state.list_all_states()
+    return templates.TemplateResponse("status.html", {"request": request, "proposals": proposals})
+
+
+@app.get("/proposals/{job_id}", response_class=HTMLResponse)
+async def view_proposal(request: Request, job_id: str):
+    """Detail page for a single proposal."""
+    proposal_state = state.load_state(job_id)
+    if not proposal_state:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    return templates.TemplateResponse("proposal.html", {"request": request, "state": proposal_state})
+
+
+@app.post("/proposals/{job_id}/reject")
+async def reject_proposal(job_id: str):
+    """Reject a proposal."""
+    proposal_state = state.load_state(job_id)
+    if not proposal_state or proposal_state["status"] != "pending_approval":
+        raise HTTPException(status_code=400, detail="Proposal not found or not pending approval")
+    
+    state.update_status(job_id, "rejected")
+    return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
+
+
+@app.post("/proposals/{job_id}/approve")
+async def approve_proposal(job_id: str):
+    """Approve a proposal and execute the fix."""
+    proposal_state = state.load_state(job_id)
+    if not proposal_state or proposal_state["status"] != "pending_approval":
+        raise HTTPException(status_code=400, detail="Proposal not found or not pending approval")
+
+    # Update state to approved
+    proposal_state = state.update_status(job_id, "approved")
+    proposal = proposal_state["proposal"]
+    
+    # 1. Pre-check: Target repo must be clean
+    is_clean, err_msg = validators.validate_repo_clean(TARGET_REPO_PATH)
+    if not is_clean:
+        state.update_status(job_id, "failed", error_message=err_msg)
+        return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
+        
+    # 2. Pre-check: Validate branch name
+    branch_name = proposal.get("suggested_branch_name", f"fix-job-{job_id}")
+    is_valid_branch, err_msg = validators.validate_branch_name(branch_name)
+    if not is_valid_branch:
+        state.update_status(job_id, "failed", error_message=err_msg)
+        return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
+
+    # 3. Create branch FIRST
+    state.update_status(job_id, "executing_fix")
+    success, msg = git_ops.create_branch(TARGET_REPO_PATH, branch_name)
+    if not success:
+        state.update_status(job_id, "failed", error_message=msg)
+        return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
+
+    # 4. Read approved candidate files from the repo
+    approved_candidates = proposal.get("candidate_files", [])
+    approved_files_with_content = {}
+    for rel_path in approved_candidates:
+        full_path = os.path.join(TARGET_REPO_PATH, rel_path)
+        if os.path.exists(full_path) and os.path.isfile(full_path):
+            with open(full_path, "r", encoding="utf-8") as f:
+                approved_files_with_content[rel_path] = f.read()
+        else:
+            # Maybe the file doesn't exist yet, we only pass what we have
+            pass
+            
+    # 5. Ask AI for the fix
+    ai_res = ai_agent.generate_fix(
+        proposal=proposal,
+        approved_files_with_content=approved_files_with_content,
+        parsed_error_context=proposal_state["parser_output"],
+        api_key=GEMINI_API_KEY
+    )
+    
+    if not ai_res["success"]:
+        state.update_status(job_id, "failed", error_message=ai_res["error"], raw_execution_response=ai_res["raw_response"])
+        git_ops.cleanup(TARGET_REPO_PATH)
+        return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
+
+    execution_result = ai_res["execution_result"]
+    state.update_status(job_id, "executing_fix", raw_execution_response=ai_res["raw_response"])
+
+    # 6. Validate Execution Result
+    validations = [
+        validators.validate_execution_schema(execution_result),
+        validators.validate_edit_scope(execution_result, approved_candidates),
+        validators.validate_file_paths([f["path"] for f in execution_result.get("files_changed", [])], TARGET_REPO_PATH),
+        validators.validate_file_content(execution_result.get("files_changed", [])),
+        validators.validate_yaml_files(execution_result.get("files_changed", []))
+    ]
+    
+    for is_valid, err_msg in validations:
+        if not is_valid:
+            state.update_status(job_id, "failed", error_message=f"Execution validation failed: {err_msg}")
+            git_ops.cleanup(TARGET_REPO_PATH)
+            return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
+            
+    # 7. Apply File Changes
+    files_changed = execution_result.get("files_changed", [])
+    success, msg = git_ops.apply_file_changes(TARGET_REPO_PATH, files_changed)
+    if not success:
+        state.update_status(job_id, "failed", error_message=msg)
+        git_ops.cleanup(TARGET_REPO_PATH)
+        return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
+
+    # 8. Generate Diff for Review
+    diff_stat, full_diff = git_ops.generate_diff(TARGET_REPO_PATH)
+    
+    # 9. Stage validated files, commit, and push
+    paths_to_stage = [f["path"] for f in files_changed]
+    commit_message = proposal.get("suggested_pr_title", "Fix pipeline failure")
+    
+    success, msg = git_ops.commit_and_push(TARGET_REPO_PATH, branch_name, commit_message, paths_to_stage)
+    if not success:
+        state.update_status(job_id, "failed", error_message=msg)
+        git_ops.cleanup(TARGET_REPO_PATH)
+        return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
+        
+    state.update_status(job_id, "fixed", diff_summary=diff_stat)
+
+    # 10. Create Pull Request
+    pr_title = proposal.get("suggested_pr_title", f"Fix for job {job_id}")
+    pr_body = f"## 🔍 Error Analysis\n\n{proposal.get('error_explanation', '')}\n\n"
+    pr_body += f"## 💡 Suggested Fix\n\n{proposal.get('suggested_fix', '')}\n\n"
+    pr_body += f"## 📝 What Was Changed\n\n{execution_result.get('change_summary', '')}\n\n"
+    pr_body += f"### Files Modified\n"
+    for f in files_changed:
+        pr_body += f"- {f.get('path')} ({f.get('action')})\n"
+    pr_body += f"\n## 📊 Diff Summary\n\n```\n{diff_stat}\n```\n\n---\n*Generated by AI Pipeline Fixer*"
+
+    # We need to run create_pull_request using await since it's an async method
+    pr_res = await github_client.create_pull_request(
+        repo_full_name=proposal_state["repo_full_name"],
+        head_branch=branch_name,
+        base_branch="main",
+        title=pr_title,
+        body=pr_body
+    )
+    
+    if pr_res and "html_url" in pr_res:
+        state.update_status(job_id, "pr_created", pr_url=pr_res["html_url"], execution_result=execution_result)
+    else:
+        state.update_status(job_id, "failed", error_message="PR creation failed", execution_result=execution_result)
+        
+    # Cleanup checkout back to main
+    git_ops.cleanup(TARGET_REPO_PATH)
+
+    return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)

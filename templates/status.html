@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Pipeline Fixer — Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 2rem;
+        }
+        h1 {
+            color: #58a6ff;
+            margin-bottom: 1.5rem;
+            font-size: 1.6rem;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: #8b949e;
+            font-size: 1.1rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #161b22;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        th {
+            background: #21262d;
+            color: #58a6ff;
+            text-align: left;
+            padding: 0.75rem 1rem;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        td {
+            padding: 0.75rem 1rem;
+            border-top: 1px solid #21262d;
+            font-size: 0.9rem;
+        }
+        tr:hover { background: #1c2128; }
+        a { color: #58a6ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .badge {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-pending { background: #d29922; color: #0d1117; }
+        .badge-approved { background: #238636; color: #fff; }
+        .badge-rejected { background: #da3633; color: #fff; }
+        .badge-pr_created { background: #a371f7; color: #fff; }
+        .badge-failed { background: #da3633; color: #fff; }
+        .badge-fixed { background: #238636; color: #fff; }
+        .badge-parsed { background: #8b949e; color: #0d1117; }
+        .badge-proposal_ready { background: #388bfd; color: #fff; }
+        .badge-executing_fix { background: #d29922; color: #0d1117; }
+    </style>
+</head>
+<body>
+    <h1>🔧 AI Pipeline Fixer — Dashboard</h1>
+
+    {% if proposals %}
+    <table>
+        <thead>
+            <tr>
+                <th>Job ID</th>
+                <th>Repository</th>
+                <th>Status</th>
+                <th>Error Label</th>
+                <th>Created</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in proposals %}
+            <tr>
+                <td><code>{{ p.job_id }}</code></td>
+                <td>{{ p.repo_full_name }}</td>
+                <td>
+                    <span class="badge badge-{{ p.status }}">{{ p.status }}</span>
+                </td>
+                <td>{{ p.parser_output.error_label if p.parser_output else '—' }}</td>
+                <td>{{ p.created_at[:19] if p.created_at else '—' }}</td>
+                <td><a href="/proposals/{{ p.job_id }}">View →</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">
+        <p>No proposals yet.</p>
+        <p>Trigger a failing workflow in your demo repo to get started.</p>
+    </div>
+    {% endif %}
+</body>
+</html>

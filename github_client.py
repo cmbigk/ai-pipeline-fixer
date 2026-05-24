@@ -40,3 +40,31 @@ class GitHubClient:
             else:
                 print(f"Failed to download log for job {job_id}: {response.status_code} {response.text}")
                 return None
+
+    async def create_pull_request(
+        self,
+        repo_full_name: str,
+        head_branch: str,
+        base_branch: str,
+        title: str,
+        body: str,
+    ) -> Optional[dict]:
+        """
+        Create a pull request via the GitHub API.
+        Returns the PR data dict if successful.
+        """
+        url = f"{self.base_url}/repos/{repo_full_name}/pulls"
+        payload = {
+            "title": title,
+            "body": body,
+            "head": head_branch,
+            "base": base_branch,
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=self.headers, json=payload)
+            if response.status_code == 201:
+                return response.json()
+            else:
+                print(f"Failed to create PR: {response.status_code} {response.text}")
+                return None
+
