@@ -97,9 +97,15 @@ async def github_webhook(
                 # Get repo files
                 repo_files = []
                 if os.path.exists(TARGET_REPO_PATH):
-                    for root, _, filenames in os.walk(TARGET_REPO_PATH):
-                        if ".git" in root or "__pycache__" in root:
-                            continue
+                    for root, dirs, filenames in os.walk(TARGET_REPO_PATH):
+                        # Filter out directories safely
+                        if ".git" in dirs:
+                            dirs.remove(".git")
+                        if "__pycache__" in dirs:
+                            dirs.remove("__pycache__")
+                        if "venv" in dirs:
+                            dirs.remove("venv")
+                        
                         for f in filenames:
                             full_path = os.path.join(root, f)
                             rel_path = os.path.relpath(full_path, TARGET_REPO_PATH)
