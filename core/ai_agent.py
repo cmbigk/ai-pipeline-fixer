@@ -102,7 +102,8 @@ Files in the repository (use these exact paths in your candidate_files):
 Return your analysis as the specified JSON structure."""
 
     raw_response = ""
-    for attempt in range(4):  # Increased to 4 attempts to handle rate limits
+    last_error = ""
+    for attempt in range(5):  # Increased to 5 attempts
         try:
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
@@ -116,24 +117,25 @@ Return your analysis as the specified JSON structure."""
             proposal = _extract_json_from_response(raw_response)
             return {"success": True, "proposal": proposal, "raw_response": raw_response}
 
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            last_error = f"JSONDecodeError: {str(e)}"
             print(f"Proposal attempt {attempt + 1}: Invalid JSON from Gemini, retrying...")
             continue
         except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                print(f"Proposal attempt {attempt + 1}: Rate limit exceeded (429). Sleeping 10 seconds...")
+            last_error = str(e)
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "Quota exceeded" in str(e):
+                print(f"Proposal attempt {attempt + 1}: Rate limit exceeded (429). Sleeping 15 seconds...")
                 import time
-                time.sleep(10)
+                time.sleep(15)
                 continue
                 
-            raw_response = str(e)
             return {
                 "success": False,
-                "error": f"Gemini API error: {str(e)}",
+                "error": f"Gemini API error: {last_error}",
                 "raw_response": raw_response,
             }
 
-    return {"success": False, "error": "Exceeded maximum retries (including rate limits/JSON errors).", "raw_response": raw_response}
+    return {"success": False, "error": f"Exceeded maximum retries. Last error: {last_error}", "raw_response": raw_response}
 
 
 def generate_fix(
@@ -173,7 +175,8 @@ Failure snippet:
 Return the modified files as the specified JSON structure."""
 
     raw_response = ""
-    for attempt in range(4):
+    last_error = ""
+    for attempt in range(5):
         try:
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
@@ -187,21 +190,22 @@ Return the modified files as the specified JSON structure."""
             execution_result = _extract_json_from_response(raw_response)
             return {"success": True, "execution_result": execution_result, "raw_response": raw_response}
 
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            last_error = f"JSONDecodeError: {str(e)}"
             print(f"Execution attempt {attempt + 1}: Invalid JSON from Gemini, retrying...")
             continue
         except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                print(f"Execution attempt {attempt + 1}: Rate limit exceeded (429). Sleeping 10 seconds...")
+            last_error = str(e)
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "Quota exceeded" in str(e):
+                print(f"Execution attempt {attempt + 1}: Rate limit exceeded (429). Sleeping 15 seconds...")
                 import time
-                time.sleep(10)
+                time.sleep(15)
                 continue
                 
-            raw_response = str(e)
             return {
                 "success": False,
-                "error": f"Gemini API error: {str(e)}",
+                "error": f"Gemini API error: {last_error}",
                 "raw_response": raw_response,
             }
 
-    return {"success": False, "error": "Exceeded maximum retries (including rate limits/JSON errors).", "raw_response": raw_response}
+    return {"success": False, "error": f"Exceeded maximum retries. Last error: {last_error}", "raw_response": raw_response}
