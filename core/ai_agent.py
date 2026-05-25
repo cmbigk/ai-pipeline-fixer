@@ -3,7 +3,7 @@ import json
 from google import genai
 
 # Gemini model — configurable. Check current pricing/limits at https://ai.google.dev/pricing
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-flash-latest"
 
 # Prompt for the proposal phase
 PROPOSAL_SYSTEM_PROMPT = """You are a DevOps error analysis assistant.
