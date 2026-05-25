@@ -60,7 +60,7 @@ async def github_webhook(
     payload = json.loads(payload_body)
     action = payload.get("action")
 
-    print(f"[WEBHOOK] Event: {x_github_event} | Action: {action}")
+   # print(f"[WEBHOOK] Event: {x_github_event} | Action: {action}")
 
     # --- Handle PR Events ---
     if x_github_event == "pull_request":
@@ -83,7 +83,7 @@ async def github_webhook(
     workflow_run = payload.get("workflow_run", {})
     conclusion = workflow_run.get("conclusion")
 
-    print(f"[WEBHOOK] workflow_run action={action} conclusion={conclusion} run_id={workflow_run.get('id', '?')}")
+    #print(f"[WEBHOOK] workflow_run action={action} conclusion={conclusion} run_id={workflow_run.get('id', '?')}")
 
     # 4. Detect whether the workflow run conclusion is failure
     if action == "completed" and conclusion == "failure":
