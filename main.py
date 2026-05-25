@@ -54,11 +54,30 @@ async def github_webhook(
         raise HTTPException(status_code=403, detail="Invalid signature")
 
     # 3. Check event type
-    if x_github_event != "workflow_run":
-        return {"status": "ignored", "reason": f"Not a workflow_run event. Got: {x_github_event}"}
+    if x_github_event not in ["workflow_run", "pull_request"]:
+        return {"status": "ignored", "reason": f"Unhandled event. Got: {x_github_event}"}
 
     payload = json.loads(payload_body)
     action = payload.get("action")
+
+    # --- Handle PR Events ---
+    if x_github_event == "pull_request":
+        if action == "closed" and payload.get("pull_request", {}).get("merged") is True:
+            pr = payload["pull_request"]
+            head_branch = pr.get("head", {}).get("ref")
+            if head_branch:
+                print(f"PR merged from branch: {head_branch}")
+                all_states = state.list_all_states()
+                for s in all_states:
+                    proposal = s.get("proposal")
+                    if proposal and proposal.get("suggested_branch_name") == head_branch:
+                        state.update_status(s["job_id"], "fixed")
+                        print(f"Updated job {s['job_id']} status to fixed")
+                        return {"status": "success", "message": f"Job {s['job_id']} marked as fixed."}
+                return {"status": "ignored", "message": f"No job found for branch {head_branch}"}
+        return {"status": "ignored", "reason": "PR not closed/merged"}
+
+    # --- Handle Workflow Run Events ---
     workflow_run = payload.get("workflow_run", {})
     conclusion = workflow_run.get("conclusion")
 
@@ -180,6 +199,65 @@ async def reject_proposal(job_id: str):
         raise HTTPException(status_code=400, detail="Proposal not found or not pending approval")
     
     state.update_status(job_id, "rejected")
+    return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
+
+
+@app.post("/proposals/{job_id}/retry")
+async def retry_proposal(job_id: str):
+    """Rerun the proposal generation for a failed job."""
+    proposal_state = state.load_state(job_id)
+    if not proposal_state or proposal_state["status"] != "failed":
+        raise HTTPException(status_code=400, detail="Proposal not found or not in failed state")
+
+    # Clear old proposal data and reset to parsed
+    state.update_status(job_id, "parsed", proposal=None, error_message=None)
+    
+    repo_full_name = proposal_state["repo_full_name"]
+    parser_output = proposal_state["parser_output"]
+
+    # Get repo files
+    repo_files = []
+    if os.path.exists(TARGET_REPO_PATH):
+        for root, dirs, filenames in os.walk(TARGET_REPO_PATH):
+            if ".git" in dirs:
+                dirs.remove(".git")
+            if "__pycache__" in dirs:
+                dirs.remove("__pycache__")
+            if "venv" in dirs:
+                dirs.remove("venv")
+            for f in filenames:
+                full_path = os.path.join(root, f)
+                rel_path = os.path.relpath(full_path, TARGET_REPO_PATH)
+                repo_files.append(rel_path)
+
+    # Re-run AI proposal
+    ai_res = ai_agent.generate_proposal(parser_output, repo_full_name, GEMINI_API_KEY, repo_files)
+    
+    if ai_res["success"]:
+        proposal = ai_res["proposal"]
+        is_valid, err_msg = validators.validate_proposal_schema(proposal)
+        if is_valid:
+            state.update_status(
+                job_id, 
+                "pending_approval", 
+                proposal=proposal,
+                raw_proposal_response=ai_res["raw_response"]
+            )
+        else:
+            state.update_status(
+                job_id, 
+                "failed", 
+                error_message=f"Proposal validation failed: {err_msg}",
+                raw_proposal_response=ai_res["raw_response"]
+            )
+    else:
+        state.update_status(
+            job_id, 
+            "failed", 
+            error_message=f"AI proposal failed: {ai_res['error']}",
+            raw_proposal_response=ai_res["raw_response"]
+        )
+
     return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
 
 

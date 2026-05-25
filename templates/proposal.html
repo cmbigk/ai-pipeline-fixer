@@ -138,12 +138,20 @@
     {% if state.error_message %}
     <div class="error-box">
         <strong>Error:</strong> {{ state.error_message }}
+        {% if state.status == 'failed' %}
+        <form method="POST" action="/proposals/{{ state.job_id }}/retry" style="margin-top: 1rem;">
+            <button type="submit" class="btn btn-approve">🔁 Rerun Proposal</button>
+        </form>
+        {% endif %}
     </div>
     {% endif %}
 
     {% if state.pr_url %}
-    <div class="success-box">
-        <strong>✅ PR Created:</strong> <a href="{{ state.pr_url }}" target="_blank">{{ state.pr_url }}</a>
+    <div class="success-box" style="display: flex; align-items: center; justify-content: space-between;">
+        <div>
+            <strong>✅ PR Created:</strong> <a href="{{ state.pr_url }}" target="_blank" id="pr-link">{{ state.pr_url }}</a>
+        </div>
+        <button class="btn btn-approve" style="padding: 0.4rem 1rem; font-size: 0.85rem;" onclick="navigator.clipboard.writeText('{{ state.pr_url }}').then(() => { this.innerText = 'Copied!'; setTimeout(() => this.innerText = 'Copy Link', 2000); })">Copy Link</button>
     </div>
     {% endif %}
 
