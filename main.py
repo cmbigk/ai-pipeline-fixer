@@ -86,7 +86,7 @@ async def github_webhook(
     #print(f"[WEBHOOK] workflow_run action={action} conclusion={conclusion} run_id={workflow_run.get('id', '?')}")
 
     # 4. Detect whether the workflow run conclusion is failure
-    if action == "completed" and conclusion == "failure":
+    if conclusion == "failure":
         repo_full_name = payload["repository"]["full_name"]
         run_id = workflow_run["id"]
         
