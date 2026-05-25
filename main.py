@@ -100,6 +100,12 @@ async def github_webhook(
             job_name = failed_job["name"]
             print(f"Identified failed job: {job_name} (ID: {job_id})")
 
+            # Check for deduplication: if we already have a state for this job, ignore it.
+            existing_state = state.load_state(str(job_id))
+            if existing_state is not None:
+                print(f"Job {job_id} already has an existing state ({existing_state.get('status')}). Skipping deduplicated webhook.")
+                return {"status": "ignored", "reason": "Proposal already exists for this job"}
+
             # 6. Download the raw log for that failed job
             log_content = await github_client.download_job_log(repo_full_name, job_id)
             

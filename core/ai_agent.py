@@ -3,7 +3,7 @@ import json
 from google import genai
 
 # Gemini model — configurable. Check current pricing/limits at https://ai.google.dev/pricing
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-2.0-flash"
 
 # Prompt for the proposal phase
 PROPOSAL_SYSTEM_PROMPT = """You are a DevOps error analysis assistant.
@@ -124,9 +124,10 @@ Return your analysis as the specified JSON structure."""
         except Exception as e:
             last_error = str(e)
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "Quota exceeded" in str(e):
-                print(f"Proposal attempt {attempt + 1}: Rate limit exceeded (429). Sleeping 15 seconds...")
+                backoff_time = 5 * (2 ** attempt)
+                print(f"Proposal attempt {attempt + 1}: Rate limit exceeded (429). Sleeping {backoff_time} seconds...")
                 import time
-                time.sleep(15)
+                time.sleep(backoff_time)
                 continue
                 
             return {
@@ -197,9 +198,10 @@ Return the modified files as the specified JSON structure."""
         except Exception as e:
             last_error = str(e)
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "Quota exceeded" in str(e):
-                print(f"Execution attempt {attempt + 1}: Rate limit exceeded (429). Sleeping 15 seconds...")
+                backoff_time = 5 * (2 ** attempt)
+                print(f"Execution attempt {attempt + 1}: Rate limit exceeded (429). Sleeping {backoff_time} seconds...")
                 import time
-                time.sleep(15)
+                time.sleep(backoff_time)
                 continue
                 
             return {
