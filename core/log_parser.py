@@ -14,8 +14,8 @@ class LogParser:
             (r'permission denied', 'permission_denied'),
             (r'not set', 'missing_env_var'),
             (r'fail(ed|ure)?', 'test_failure'),
-            (r'error:', 'unknown_failure'),
-            (r'exception', 'unknown_failure'),
+            (r'\berror\b', 'unknown_failure'),
+            (r'\bexception\b', 'unknown_failure'),
             (r'exit code \d+', 'unknown_failure')
         ]
 
@@ -41,14 +41,19 @@ class LogParser:
         matched_patterns = []
         error_index = -1
         
-        # Scan lines from top to bottom to find the first/strongest error indicator
-        for i, line in enumerate(lines):
+        # Scan lines from bottom to top to find the actual error before cleanup
+        for i in range(len(lines) - 1, -1, -1):
+            line = lines[i]
             line_lower = line.lower()
             
+            # Skip common false positives
+            if "npm warn" in line_lower or "node.js 20 actions are deprecated" in line_lower:
+                continue
+                
             for pattern, label in self.error_patterns:
                 if re.search(pattern, line_lower):
                     if error_index == -1:
-                        # Capture the first matched error as the primary issue
+                        # Capture the first matched error (which is the last one in the file)
                         primary_error_line = line
                         error_label = label
                         error_index = i
@@ -65,9 +70,9 @@ class LogParser:
                 "confidence": 0.0
             }
             
-        # Extract surrounding context (e.g., 3 lines before and 5 lines after)
-        start_idx = max(0, error_index - 5)
-        end_idx = min(len(lines), error_index + 20)
+        # Extract surrounding context (grab more lines before the error, since stack traces/logs lead up to it)
+        start_idx = max(0, error_index - 20)
+        end_idx = min(len(lines), error_index + 15)
         failure_snippet = "\n".join(lines[start_idx:end_idx])
         
         # Determine a basic confidence score

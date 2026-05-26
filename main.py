@@ -134,19 +134,29 @@ async def github_webhook(
                 # Get repo files
                 repo_files = []
                 if os.path.exists(TARGET_REPO_PATH):
-                    for root, dirs, filenames in os.walk(TARGET_REPO_PATH):
-                        # Filter out directories safely
-                        if ".git" in dirs:
-                            dirs.remove(".git")
-                        if "__pycache__" in dirs:
-                            dirs.remove("__pycache__")
-                        if "venv" in dirs:
-                            dirs.remove("venv")
-                        
-                        for f in filenames:
-                            full_path = os.path.join(root, f)
-                            rel_path = os.path.relpath(full_path, TARGET_REPO_PATH)
-                            repo_files.append(rel_path)
+                    try:
+                        # Attempt to use git ls-files to perfectly respect .gitignore
+                        import subprocess
+                        git_res = subprocess.run(
+                            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                            cwd=TARGET_REPO_PATH,
+                            capture_output=True,
+                            text=True,
+                            check=True
+                        )
+                        repo_files = [line.strip() for line in git_res.stdout.splitlines() if line.strip()]
+                    except Exception:
+                        # Fallback to os.walk if not a git repo or git fails
+                        for root, dirs, filenames in os.walk(TARGET_REPO_PATH):
+                            # Filter out directories safely
+                            for d in [".git", "__pycache__", "venv", "node_modules", "dist", ".next", "build", "coverage"]:
+                                if d in dirs:
+                                    dirs.remove(d)
+                            
+                            for f in filenames:
+                                full_path = os.path.join(root, f)
+                                rel_path = os.path.relpath(full_path, TARGET_REPO_PATH)
+                                repo_files.append(rel_path)
                 
                 # 9. Generate AI proposal
                 ai_res = ai_agent.generate_proposal(parser_output, repo_full_name, GEMINI_API_KEY, repo_files)
