@@ -13,7 +13,7 @@ class GitHubClient:
 
     async def get_failed_job_for_run(self, repo_full_name: str, run_id: int) -> Optional[dict]:
         """
-        Fetches all jobs for a workflow run and returns the first failed job.
+        Fetches all jobs for a workflow run and returns the failed job with the longest log.
         """
         url = f"{self.base_url}/repos/{repo_full_name}/actions/runs/{run_id}/jobs"
         async with httpx.AsyncClient() as client:
@@ -21,10 +21,25 @@ class GitHubClient:
             response.raise_for_status()
             data = response.json()
             
-            for job in data.get("jobs", []):
-                if job.get("conclusion") == "failure":
-                    return job
-        return None
+            failed_jobs = [job for job in data.get("jobs", []) if job.get("conclusion") == "failure"]
+            
+            if not failed_jobs:
+                return None
+                
+            if len(failed_jobs) == 1:
+                return failed_jobs[0]
+                
+            # If multiple failed jobs, fetch their logs to find the most informative one (longest)
+            best_job = failed_jobs[0]
+            max_len = -1
+            
+            for job in failed_jobs:
+                log = await self.download_job_log(repo_full_name, job["id"])
+                if log and len(log) > max_len:
+                    max_len = len(log)
+                    best_job = job
+                    
+            return best_job
 
     async def download_job_log(self, repo_full_name: str, job_id: int) -> Optional[str]:
         """

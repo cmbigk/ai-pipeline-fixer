@@ -209,9 +209,15 @@
     <!-- Approve / Reject buttons — only show when pending_approval -->
     {% if state.status == 'pending_approval' %}
     <div class="actions">
+        {% if state.proposal.is_patchable != false %}
         <form method="POST" action="/proposals/{{ state.job_id }}/approve">
             <button type="submit" class="btn btn-approve">✅ Approve & Execute Fix</button>
         </form>
+        {% else %}
+        <div style="background-color: #fee2e2; color: #991b1b; padding: 0.75rem; border-radius: 4px; font-weight: 500;">
+            ⚠️ This issue is marked as not patchable via code (e.g., missing secrets or environment configuration). Approval is disabled.
+        </div>
+        {% endif %}
         <form method="POST" action="/proposals/{{ state.job_id }}/reject">
             <button type="submit" class="btn btn-reject">❌ Reject</button>
         </form>

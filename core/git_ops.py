@@ -12,31 +12,32 @@ def _run_git(repo_path: str, args: list[str]) -> subprocess.CompletedProcess:
     )
 
 
-def create_branch(repo_path: str, branch_name: str) -> Tuple[bool, str]:
+def create_branch(repo_path: str, branch_name: str, base_branch: str = "main") -> Tuple[bool, str, str]:
     """
-    Checkout main, pull latest, and create a new branch.
-    Returns (success, message).
+    Checkout base_branch, pull latest, and create a new branch.
+    Returns (success, actual_branch_name, message).
     """
-    # Checkout main first
-    result = _run_git(repo_path, ["checkout", "main"])
+    # Checkout base branch first
+    result = _run_git(repo_path, ["checkout", base_branch])
     if result.returncode != 0:
-        return False, f"Failed to checkout main: {result.stderr}"
+        return False, "", f"Failed to checkout {base_branch}: {result.stderr}"
 
     # Pull latest
-    result = _run_git(repo_path, ["pull", "origin", "main"])
+    result = _run_git(repo_path, ["pull", "origin", base_branch])
     if result.returncode != 0:
-        return False, f"Failed to pull latest: {result.stderr}"
+        return False, "", f"Failed to pull latest {base_branch}: {result.stderr}"
 
     # Create and switch to new branch
     result = _run_git(repo_path, ["checkout", "-b", branch_name])
     if result.returncode != 0:
         # If branch already exists, try with a suffix
-        result = _run_git(repo_path, ["checkout", "-b", f"{branch_name}-retry"])
+        retry_branch = f"{branch_name}-retry"
+        result = _run_git(repo_path, ["checkout", "-b", retry_branch])
         if result.returncode != 0:
-            return False, f"Failed to create branch: {result.stderr}"
-        return True, f"Branch '{branch_name}-retry' created (original name was taken)"
+            return False, "", f"Failed to create branch: {result.stderr}"
+        return True, retry_branch, f"Branch '{retry_branch}' created (original name was taken)"
 
-    return True, f"Branch '{branch_name}' created"
+    return True, branch_name, f"Branch '{branch_name}' created"
 
 
 def apply_file_changes(repo_path: str, files_changed: list[dict]) -> Tuple[bool, str]:
@@ -100,22 +101,22 @@ def commit_and_push(
     return True, f"Committed and pushed to '{branch_name}'"
 
 
-def cleanup(repo_path: str) -> Tuple[bool, str]:
-    """Return to main branch after the fix is done."""
-    result = _run_git(repo_path, ["checkout", "main"])
+def cleanup(repo_path: str, base_branch: str = "main") -> Tuple[bool, str]:
+    """Return to base branch after the fix is done."""
+    result = _run_git(repo_path, ["checkout", base_branch])
     if result.returncode != 0:
-        return False, f"Failed to checkout main: {result.stderr} {result.stdout}"
-    return True, "Returned to main branch"
+        return False, f"Failed to checkout {base_branch}: {result.stderr} {result.stdout}"
+    return True, f"Returned to {base_branch} branch"
 
-def delete_local_branch(repo_path: str, branch_name: str) -> Tuple[bool, str]:
+def delete_local_branch(repo_path: str, branch_name: str, base_branch: str = "main") -> Tuple[bool, str]:
     """
-    Checkout main, pull latest, and delete the branch locally.
+    Checkout base_branch, pull latest, and delete the branch locally.
     Returns (success, message).
     """
-    # Checkout main first
-    result = _run_git(repo_path, ["checkout", "main"])
+    # Checkout base branch first
+    result = _run_git(repo_path, ["checkout", base_branch])
     if result.returncode != 0:
-        return False, f"Failed to checkout main before deleting branch: {result.stderr}"
+        return False, f"Failed to checkout {base_branch} before deleting branch: {result.stderr}"
 
     # Delete branch locally
     result = _run_git(repo_path, ["branch", "-D", branch_name])

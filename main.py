@@ -2,7 +2,8 @@ import os
 import hmac
 import hashlib
 import json
-from fastapi import FastAPI, Request, HTTPException, Header, Form
+import asyncio
+from fastapi import FastAPI, Request, HTTPException, Header, Form, BackgroundTasks
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
@@ -21,6 +22,7 @@ GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 TARGET_REPO_PATH = os.getenv("TARGET_REPO_PATH", "")
+DEFAULT_BRANCH = os.getenv("DEFAULT_BRANCH", "main")
 
 app = FastAPI(title="AI Pipeline Fixer Webhook")
 templates = Jinja2Templates(directory="templates")
@@ -42,6 +44,7 @@ def verify_signature(payload_body: bytes, secret_token: str, signature_header: s
 @app.post("/webhook")
 async def github_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_hub_signature_256: str = Header(None),
     x_github_event: str = Header(None)
 ):
@@ -77,7 +80,7 @@ async def github_webhook(
                         print(f"Updated job {s['job_id']} status to fixed")
                         
                         # Delete the branch locally
-                        success, msg = git_ops.delete_local_branch(TARGET_REPO_PATH, head_branch)
+                        success, msg = git_ops.delete_local_branch(TARGET_REPO_PATH, head_branch, base_branch=DEFAULT_BRANCH)
                         if success:
                             print(f"Successfully deleted local branch: {head_branch}")
                         else:
@@ -95,93 +98,106 @@ async def github_webhook(
 
     # 4. Detect whether the workflow run conclusion is failure
     if conclusion == "failure":
-        repo_full_name = payload["repository"]["full_name"]
-        run_id = workflow_run["id"]
+        background_tasks.add_task(process_workflow_run_background, payload)
+        return {"status": "accepted", "message": "Workflow run processing in background"}
+
+    return {"status": "ignored", "reason": "Workflow did not fail or is not completed"}
+
+async def process_workflow_run_background(payload: dict):
+    workflow_run = payload.get("workflow_run", {})
+    repo_full_name = payload["repository"]["full_name"]
+    run_id = workflow_run["id"]
+    
+    print(f"Detected failed workflow run: {run_id} in repo {repo_full_name}")
+
+    # 5. Use GitHub Actions API to find jobs
+    failed_job = await github_client.get_failed_job_for_run(repo_full_name, run_id)
+    
+    if failed_job:
+        job_id = failed_job["id"]
+        job_name = failed_job["name"]
+        print(f"Identified failed job: {job_name} (ID: {job_id})")
+
+        # Check for deduplication: if we already have a state for this job, ignore it.
+        existing_state = state.load_state(str(job_id))
+        if existing_state is not None:
+            print(f"Job {job_id} already has an existing state ({existing_state.get('status')}). Skipping deduplicated webhook.")
+            return
+
+        # 6. Download the raw log for that failed job
+        log_content = await github_client.download_job_log(repo_full_name, job_id)
         
-        print(f"Detected failed workflow run: {run_id} in repo {repo_full_name}")
+        if log_content:
+            # 7. Save the raw log locally
+            log_file_path = f"logs/job-{job_id}.log"
+            with open(log_file_path, "w", encoding="utf-8") as f:
+                f.write(log_content)
+            print(f"Successfully saved log to {log_file_path}")
 
-        # 5. Use GitHub Actions API to find jobs
-        failed_job = await github_client.get_failed_job_for_run(repo_full_name, run_id)
-        
-        if failed_job:
-            job_id = failed_job["id"]
-            job_name = failed_job["name"]
-            print(f"Identified failed job: {job_name} (ID: {job_id})")
-
-            # Check for deduplication: if we already have a state for this job, ignore it.
-            existing_state = state.load_state(str(job_id))
-            if existing_state is not None:
-                print(f"Job {job_id} already has an existing state ({existing_state.get('status')}). Skipping deduplicated webhook.")
-                return {"status": "ignored", "reason": "Proposal already exists for this job"}
-
-            # 6. Download the raw log for that failed job
-            log_content = await github_client.download_job_log(repo_full_name, job_id)
+            # 8. Parse the log
+            parser_output = log_parser.parse(log_content)
             
-            if log_content:
-                # 7. Save the raw log locally
-                log_file_path = f"logs/job-{job_id}.log"
-                with open(log_file_path, "w", encoding="utf-8") as f:
-                    f.write(log_content)
-                print(f"Successfully saved log to {log_file_path}")
-
-                # 8. Parse the log
-                parser_output = log_parser.parse(log_content)
-                
-                # Create initial state
-                state.create_initial_state(str(job_id), repo_full_name, parser_output)
-                state.update_status(str(job_id), "proposal_ready")
-                
-                # Get repo files
-                repo_files = []
-                if os.path.exists(TARGET_REPO_PATH):
-                    try:
-                        # Attempt to use git ls-files to perfectly respect .gitignore
-                        import subprocess
-                        git_res = subprocess.run(
-                            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
-                            cwd=TARGET_REPO_PATH,
-                            capture_output=True,
-                            text=True,
-                            check=True
-                        )
-                        repo_files = [line.strip() for line in git_res.stdout.splitlines() if line.strip()]
-                    except Exception:
-                        # Fallback to os.walk if not a git repo or git fails
-                        for root, dirs, filenames in os.walk(TARGET_REPO_PATH):
-                            # Filter out directories safely
-                            for d in [".git", "__pycache__", "venv", "node_modules", "dist", ".next", "build", "coverage"]:
-                                if d in dirs:
-                                    dirs.remove(d)
-                            
-                            for f in filenames:
-                                full_path = os.path.join(root, f)
-                                rel_path = os.path.relpath(full_path, TARGET_REPO_PATH)
-                                repo_files.append(rel_path)
-                
-                # 9. Generate AI proposal
-                ai_res = ai_agent.generate_proposal(parser_output, repo_full_name, GEMINI_API_KEY, repo_files)
-                
-                if ai_res["success"]:
-                    proposal = ai_res["proposal"]
-                    # 10. Validate proposal schema
-                    is_valid, err_msg = validators.validate_proposal_schema(proposal)
-                    if is_valid:
-                        state.update_status(
-                            str(job_id), 
-                            "pending_approval", 
-                            proposal=proposal,
-                            raw_proposal_response=ai_res["raw_response"]
-                        )
-                        print(f"Proposal generated and pending approval for job {job_id}")
-                    else:
-                        state.update_status(
-                            str(job_id), 
-                            "failed", 
-                            error_message=f"Proposal validation failed: {err_msg}",
-                            raw_proposal_response=ai_res["raw_response"]
-                        )
-                        print(f"Proposal validation failed: {err_msg}")
+            # Create initial state
+            state.create_initial_state(str(job_id), repo_full_name, parser_output)
+            state.update_status(str(job_id), "proposal_ready")
+            
+            # Get repo files
+            repo_files = []
+            if os.path.exists(TARGET_REPO_PATH):
+                try:
+                    # Attempt to use git ls-files to perfectly respect .gitignore
+                    import subprocess
+                    git_res = subprocess.run(
+                        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                        cwd=TARGET_REPO_PATH,
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                    repo_files = [line.strip() for line in git_res.stdout.splitlines() if line.strip()]
+                except Exception:
+                    # Fallback to os.walk if not a git repo or git fails
+                    for root, dirs, filenames in os.walk(TARGET_REPO_PATH):
+                        # Filter out directories safely
+                        for d in [".git", "__pycache__", "venv", "node_modules", "dist", ".next", "build", "coverage"]:
+                            if d in dirs:
+                                dirs.remove(d)
+                        
+                        for f in filenames:
+                            full_path = os.path.join(root, f)
+                            rel_path = os.path.relpath(full_path, TARGET_REPO_PATH)
+                            repo_files.append(rel_path)
+            
+            # 9. Generate AI proposal in a separate thread so it doesn't block the async loop during backoffs
+            ai_res = await asyncio.to_thread(
+                ai_agent.generate_proposal, 
+                parser_output, 
+                repo_full_name, 
+                GEMINI_API_KEY, 
+                repo_files
+            )
+            
+            if ai_res["success"]:
+                proposal = ai_res["proposal"]
+                # 10. Validate proposal schema
+                is_valid, err_msg = validators.validate_proposal_schema(proposal)
+                if is_valid:
+                    state.update_status(
+                        str(job_id), 
+                        "pending_approval", 
+                        proposal=proposal,
+                        raw_proposal_response=ai_res["raw_response"]
+                    )
+                    print(f"Proposal generated and pending approval for job {job_id}")
                 else:
+                    state.update_status(
+                        str(job_id), 
+                        "failed", 
+                        error_message=f"Proposal validation failed: {err_msg}",
+                        raw_proposal_response=ai_res["raw_response"]
+                    )
+                    print(f"Proposal validation failed: {err_msg}")
+            else:
                     state.update_status(
                         str(job_id), 
                         "failed", 
@@ -189,16 +205,6 @@ async def github_webhook(
                         raw_proposal_response=ai_res["raw_response"]
                     )
                     print(f"AI proposal failed: {ai_res['error']}")
-
-                return {"status": "success", "message": f"Log processed and proposal generated."}
-            else:
-                print("Failed to download log content.")
-                return {"status": "error", "message": "Could not download log"}
-        else:
-            print(f"No failed job found for run {run_id}")
-            return {"status": "error", "message": "Failed job not found"}
-
-    return {"status": "ignored", "reason": "Workflow did not fail or is not completed"}
 
 
 # --- UI and Workflow Routes ---
@@ -246,20 +252,34 @@ async def retry_proposal(job_id: str):
     # Get repo files
     repo_files = []
     if os.path.exists(TARGET_REPO_PATH):
-        for root, dirs, filenames in os.walk(TARGET_REPO_PATH):
-            if ".git" in dirs:
-                dirs.remove(".git")
-            if "__pycache__" in dirs:
-                dirs.remove("__pycache__")
-            if "venv" in dirs:
-                dirs.remove("venv")
-            for f in filenames:
-                full_path = os.path.join(root, f)
-                rel_path = os.path.relpath(full_path, TARGET_REPO_PATH)
-                repo_files.append(rel_path)
+        try:
+            import subprocess
+            git_res = subprocess.run(
+                ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                cwd=TARGET_REPO_PATH,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            repo_files = [line.strip() for line in git_res.stdout.splitlines() if line.strip()]
+        except Exception:
+            for root, dirs, filenames in os.walk(TARGET_REPO_PATH):
+                for d in [".git", "__pycache__", "venv", "node_modules", "dist", ".next", "build", "coverage"]:
+                    if d in dirs:
+                        dirs.remove(d)
+                for f in filenames:
+                    full_path = os.path.join(root, f)
+                    rel_path = os.path.relpath(full_path, TARGET_REPO_PATH)
+                    repo_files.append(rel_path)
 
     # Re-run AI proposal
-    ai_res = ai_agent.generate_proposal(parser_output, repo_full_name, GEMINI_API_KEY, repo_files)
+    ai_res = await asyncio.to_thread(
+        ai_agent.generate_proposal, 
+        parser_output, 
+        repo_full_name, 
+        GEMINI_API_KEY, 
+        repo_files
+    )
     
     if ai_res["success"]:
         proposal = ai_res["proposal"]
@@ -300,6 +320,10 @@ async def approve_proposal(job_id: str):
     proposal_state = state.update_status(job_id, "approved")
     proposal = proposal_state["proposal"]
     
+    if not proposal.get("is_patchable", True):
+        state.update_status(job_id, "failed", error_message="Proposal is marked as not patchable via code.")
+        raise HTTPException(status_code=400, detail="Cannot approve: issue is not fixable by editing code")
+    
     # 1. Pre-check: Target repo must be clean
     is_clean, err_msg = validators.validate_repo_clean(TARGET_REPO_PATH)
     if not is_clean:
@@ -315,7 +339,7 @@ async def approve_proposal(job_id: str):
 
     # 3. Create branch FIRST
     state.update_status(job_id, "executing_fix")
-    success, msg = git_ops.create_branch(TARGET_REPO_PATH, branch_name)
+    success, actual_branch_name, msg = git_ops.create_branch(TARGET_REPO_PATH, branch_name, base_branch=DEFAULT_BRANCH)
     if not success:
         state.update_status(job_id, "failed", error_message=msg)
         return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
@@ -333,16 +357,17 @@ async def approve_proposal(job_id: str):
             pass
             
     # 5. Ask AI for the fix
-    ai_res = ai_agent.generate_fix(
-        proposal=proposal,
-        approved_files_with_content=approved_files_with_content,
-        parsed_error_context=proposal_state["parser_output"],
-        api_key=GEMINI_API_KEY
+    ai_res = await asyncio.to_thread(
+        ai_agent.generate_fix,
+        proposal,
+        approved_files_with_content,
+        proposal_state["parser_output"],
+        GEMINI_API_KEY
     )
     
     if not ai_res["success"]:
         state.update_status(job_id, "failed", error_message=ai_res["error"], raw_execution_response=ai_res["raw_response"])
-        git_ops.cleanup(TARGET_REPO_PATH)
+        git_ops.cleanup(TARGET_REPO_PATH, base_branch=DEFAULT_BRANCH)
         return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
 
     execution_result = ai_res["execution_result"]
@@ -360,7 +385,7 @@ async def approve_proposal(job_id: str):
     for is_valid, err_msg in validations:
         if not is_valid:
             state.update_status(job_id, "failed", error_message=f"Execution validation failed: {err_msg}")
-            git_ops.cleanup(TARGET_REPO_PATH)
+            git_ops.cleanup(TARGET_REPO_PATH, base_branch=DEFAULT_BRANCH)
             return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
             
     # 7. Apply File Changes
@@ -368,7 +393,7 @@ async def approve_proposal(job_id: str):
     success, msg = git_ops.apply_file_changes(TARGET_REPO_PATH, files_changed)
     if not success:
         state.update_status(job_id, "failed", error_message=msg)
-        git_ops.cleanup(TARGET_REPO_PATH)
+        git_ops.cleanup(TARGET_REPO_PATH, base_branch=DEFAULT_BRANCH)
         return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
 
     # 8. Generate Diff for Review
@@ -378,13 +403,13 @@ async def approve_proposal(job_id: str):
     paths_to_stage = [f["path"] for f in files_changed]
     commit_message = proposal.get("suggested_pr_title", "Fix pipeline failure")
     
-    success, msg = git_ops.commit_and_push(TARGET_REPO_PATH, branch_name, commit_message, paths_to_stage)
+    success, msg = git_ops.commit_and_push(TARGET_REPO_PATH, actual_branch_name, commit_message, paths_to_stage)
     if not success:
         state.update_status(job_id, "failed", error_message=msg)
-        git_ops.cleanup(TARGET_REPO_PATH)
+        git_ops.cleanup(TARGET_REPO_PATH, base_branch=DEFAULT_BRANCH)
         return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
         
-    state.update_status(job_id, "fixed", diff_summary=diff_stat)
+    state.update_status(job_id, "committed", diff_summary=diff_stat)
 
     # 10. Create Pull Request
     pr_title = proposal.get("suggested_pr_title", f"Fix for job {job_id}")
@@ -399,8 +424,8 @@ async def approve_proposal(job_id: str):
     # We need to run create_pull_request using await since it's an async method
     pr_res = await github_client.create_pull_request(
         repo_full_name=proposal_state["repo_full_name"],
-        head_branch=branch_name,
-        base_branch="main",
+        head_branch=actual_branch_name,
+        base_branch=DEFAULT_BRANCH,
         title=pr_title,
         body=pr_body
     )
@@ -410,7 +435,7 @@ async def approve_proposal(job_id: str):
     else:
         state.update_status(job_id, "failed", error_message="PR creation failed", execution_result=execution_result)
         
-    # Cleanup checkout back to main
-    git_ops.cleanup(TARGET_REPO_PATH)
+    # Cleanup checkout back to base branch
+    git_ops.cleanup(TARGET_REPO_PATH, base_branch=DEFAULT_BRANCH)
 
     return RedirectResponse(url=f"/proposals/{job_id}", status_code=303)
