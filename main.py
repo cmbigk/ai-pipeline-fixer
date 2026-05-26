@@ -75,7 +75,15 @@ async def github_webhook(
                     if proposal and proposal.get("suggested_branch_name") == head_branch:
                         state.update_status(s["job_id"], "fixed")
                         print(f"Updated job {s['job_id']} status to fixed")
-                        return {"status": "success", "message": f"Job {s['job_id']} marked as fixed."}
+                        
+                        # Delete the branch locally
+                        success, msg = git_ops.delete_local_branch(TARGET_REPO_PATH, head_branch)
+                        if success:
+                            print(f"Successfully deleted local branch: {head_branch}")
+                        else:
+                            print(f"Failed to delete local branch: {msg}")
+
+                        return {"status": "success", "message": f"Job {s['job_id']} marked as fixed and branch deleted locally."}
                 return {"status": "ignored", "message": f"No job found for branch {head_branch}"}
         return {"status": "ignored", "reason": "PR not closed/merged"}
 
@@ -189,7 +197,7 @@ async def github_webhook(
 async def list_proposals(request: Request):
     """Dashboard showing all proposals."""
     proposals = state.list_all_states()
-    return templates.TemplateResponse("status.html", {"request": request, "proposals": proposals})
+    return templates.TemplateResponse(request=request, name="status.html", context={"request": request, "proposals": proposals})
 
 
 @app.get("/proposals/{job_id}", response_class=HTMLResponse)
@@ -198,7 +206,7 @@ async def view_proposal(request: Request, job_id: str):
     proposal_state = state.load_state(job_id)
     if not proposal_state:
         raise HTTPException(status_code=404, detail="Proposal not found")
-    return templates.TemplateResponse("proposal.html", {"request": request, "state": proposal_state})
+    return templates.TemplateResponse(request=request, name="proposal.html", context={"request": request, "state": proposal_state})
 
 
 @app.post("/proposals/{job_id}/reject")

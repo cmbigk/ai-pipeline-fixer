@@ -106,3 +106,20 @@ def cleanup(repo_path: str) -> Tuple[bool, str]:
     if result.returncode != 0:
         return False, f"Failed to checkout main: {result.stderr} {result.stdout}"
     return True, "Returned to main branch"
+
+def delete_local_branch(repo_path: str, branch_name: str) -> Tuple[bool, str]:
+    """
+    Checkout main, pull latest, and delete the branch locally.
+    Returns (success, message).
+    """
+    # Checkout main first
+    result = _run_git(repo_path, ["checkout", "main"])
+    if result.returncode != 0:
+        return False, f"Failed to checkout main before deleting branch: {result.stderr}"
+
+    # Delete branch locally
+    result = _run_git(repo_path, ["branch", "-D", branch_name])
+    if result.returncode != 0:
+        return False, f"Failed to delete local branch '{branch_name}': {result.stderr}"
+
+    return True, f"Local branch '{branch_name}' deleted successfully"
